@@ -4,6 +4,7 @@
 #include <linux/sched.h>
 #include <linux/slab.h>
 
+
 #include "stack.h"
 #include "assert.h"
 
@@ -34,10 +35,58 @@ static void __init test_stack(void)
     assert(stack_empty(&data_stack));
 }
 
-static void __init print_processes_backwards(void)
-{
-    // TODO
+static void __init print_stack(struct list_head *stack, bool is_err) {
+    stack_entry_t *tos = NULL;
+    char *tos_data = NULL;
+
+    while (!stack_empty(stack)) {
+        tos = stack_pop(stack);
+        tos_data = STACK_ENTRY_DATA(tos, char*);
+        delete_stack_entry(tos);
+        if (!is_err) {
+            printk(KERN_ALERT "%s\n", tos_data);  
+        }
+        kfree(tos_data);
+    }
 }
+
+static int __init print_processes_backwards(void)
+{
+    LIST_HEAD(data_stack);
+    
+    stack_entry_t* entry = NULL;
+    char* buf = NULL;
+
+    struct task_struct *task_list;
+    for_each_process(task_list) {
+        buf = kmalloc(TASK_COMM_LEN, GFP_KERNEL);
+        entry = create_stack_entry((void*)buf);
+        if (!buf || !entry) {
+            goto err;
+        }
+        get_task_comm(buf, task_list);
+        stack_push(&data_stack,
+            entry
+        );
+    }
+
+    print_stack(&data_stack, false);
+    return 0;
+
+    err: 
+    printk(KERN_ALERT "Out of memory ERROR!\n");
+    if (buf) {
+        kfree(buf);
+    }
+    if (entry) {
+        delete_stack_entry(entry);
+    }
+
+    print_stack(&data_stack, true);
+    return ENOMEM;
+}
+
+
 
 static int __init ll_init(void)
 {
@@ -45,7 +94,7 @@ static int __init ll_init(void)
     test_stack();
     print_processes_backwards();
     return 0;
-}
+}   
 
 static void __exit ll_exit(void)
 {
