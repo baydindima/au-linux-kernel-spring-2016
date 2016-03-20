@@ -6,7 +6,7 @@ ifneq ($(KERNELRELEASE),)
 	$(MOD_NAME)-objs := module.o
 else
 	KDIR := ../../../linux/
-	VM_PATH := ../../../../vm/
+	VM_PATH := ../../../../images/vm
 all:
 	$(MAKE) -C $(KDIR) M=$$PWD
 	cp $(MOD_NAME).ko $(VM_PATH)/share/
