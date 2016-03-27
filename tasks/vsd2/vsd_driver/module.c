@@ -109,7 +109,7 @@ static long vsd_ioctl_get_size(vsd_ioctl_get_size_arg_t __user *uarg)
 static long vsd_ioctl_set_size(vsd_ioctl_set_size_arg_t __user *uarg)
 {
     vsd_ioctl_set_size_arg_t arg;
-    if (0/* TODO device is currently mapped */)
+    if (vsd_dev->mmap_count > 0)
         return -EBUSY;
 
     if (copy_from_user(&arg, uarg, sizeof(arg)))
@@ -169,7 +169,21 @@ static int map_vmalloc_range(struct vm_area_struct *uvma, void *kaddr, size_t si
      * Use vmalloc_to_page and vm_insert_page functions for this.
      */
     // TODO
+    struct page *p;
 
+    do {
+        p = vmalloc_to_page(kaddr);
+
+        int ret = vm_insert_page(uvma, uaddr, p);
+        if (ret)
+           return ret;
+
+        uaddr += PAGE_SIZE;
+        kaddr += PAGE_SIZE;
+        size -= PAGE_SIZE;
+    } while (size > 0);
+
+    
     uvma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
     return 0;
 }
@@ -197,7 +211,7 @@ static int vsd_dev_mmap(struct file *filp, struct vm_area_struct *vma)
     return 0;
 }
 
-static struct file_operations vsd_dev_fops = {
+    static struct file_operations vsd_dev_fops = {
     .owner = THIS_MODULE,
     .open = vsd_dev_open,
     .release = vsd_dev_release,
