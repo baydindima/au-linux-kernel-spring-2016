@@ -67,12 +67,13 @@ static int vsd_dev_release(struct inode *inode, struct file *filp)
 static void vsd_dev_dma_op_complete_tsk_func(unsigned long unused)
 {
     (void)unused;
-    // TODO wakeup task waiting for completion of VSD cmd
+    wake_up(&vsd_dev->dma_op_compete_wq);
 }
 
 static ssize_t vsd_dev_read(struct file *filp,
     char __user *read_user_buf, size_t read_size, loff_t *fpos)
 {
+    mutex_lock(&vsd_dev->dev_ops_serialization_mutex);
     ssize_t ret = 0;
     void *kdma_buf = NULL;
 
@@ -83,7 +84,11 @@ static ssize_t vsd_dev_read(struct file *filp,
         goto exit;
     }
 
-    // TODO check not to alloc too much DMA memory (easy DDOS)
+    if (read_size > vsd_dev->hwregs->dev_size) {
+        ret = -ENOMEM;
+        goto exit;
+    }
+
     kdma_buf = kzalloc(read_size, GFP_KERNEL);
     if (!kdma_buf) {
         ret = -ENOMEM;
@@ -104,10 +109,11 @@ static ssize_t vsd_dev_read(struct file *filp,
      * wait_event call to wait_event_interruptible call.
      * Describe sequence of events (step by step) that lead to
      * write to freed kernel buffer in vsd_* kernel code.
-     * 1. TODO
-     * 2. TODO
-     * 3. TODO
-     * ...
+     * 0. write
+     * 1. call interrupt
+     * 2. unplug device
+     * 3. signal end
+     * 4. write to freed buffer 
      */
     wait_event(vsd_dev->dma_op_compete_wq,
             vsd_dev->hwregs->cmd == VSD_CMD_NONE);
@@ -128,13 +134,14 @@ exit_free_dma:
     kfree(kdma_buf);
 exit:
     print_vsd_dev_hw_regs(vsd_dev);
-
+    mutex_unlock(&vsd_dev->dev_ops_serialization_mutex);
     return ret;
 }
 
 static ssize_t vsd_dev_write(struct file *filp,
     const char __user *write_user_buf, size_t write_size, loff_t *fpos)
 {
+    mutex_lock(&vsd_dev->dev_ops_serialization_mutex);
     ssize_t ret = 0;
     void *kdma_buf = NULL;
 
@@ -144,7 +151,11 @@ static ssize_t vsd_dev_write(struct file *filp,
         goto exit;
     }
 
-    // TODO check not to alloc too much DMA memory (easy DDOS)
+    if (write_size > vsd_dev->hwregs->dev_size) {
+        ret = -ENOMEM;
+        goto exit;
+    }
+
     kdma_buf = kzalloc(write_size, GFP_KERNEL);
     if (!kdma_buf) {
         ret = -ENOMEM;
@@ -179,7 +190,7 @@ exit_free_dma:
     kfree(kdma_buf);
 exit:
     print_vsd_dev_hw_regs(vsd_dev);
-
+    mutex_unlock(&vsd_dev->dev_ops_serialization_mutex);
     return ret;
 }
 
@@ -223,8 +234,38 @@ static long vsd_ioctl_get_size(vsd_ioctl_get_size_arg_t __user *uarg)
 
 static long vsd_ioctl_set_size(vsd_ioctl_set_size_arg_t __user *uarg)
 {
-    // TODO implement
-    return 0;
+    mutex_lock(&vsd_dev->dev_ops_serialization_mutex);
+    ssize_t ret = 0;
+    void *kdma_buf = NULL;
+
+    print_vsd_dev_hw_regs(vsd_dev);
+    if (vsd_dev->hwregs->cmd != VSD_CMD_NONE) {
+        ret = -EBUSY;
+        goto exit;
+    }
+
+    vsd_ioctl_get_size_arg_t arg;
+    if (copy_from_user(&arg, uarg, sizeof(uarg))) {
+        ret = -EFAULT;
+        goto exit;
+    }
+
+    vsd_dev->hwregs->result = 0;
+    vsd_dev->hwregs->tasklet_vaddr =
+        (uint64_t)&vsd_dev->dma_op_complete_tsk;
+    vsd_dev->hwregs->dma_size = arg.size;
+    wmb();
+    vsd_dev->hwregs->cmd = VSD_CMD_SET_SIZE;
+
+    wait_event(vsd_dev->dma_op_compete_wq,
+            vsd_dev->hwregs->cmd == VSD_CMD_NONE);
+
+    ret = vsd_dev->hwregs->result;
+
+exit:
+    print_vsd_dev_hw_regs(vsd_dev);
+    mutex_unlock(&vsd_dev->dev_ops_serialization_mutex);
+    return ret;
 }
 
 static long vsd_dev_ioctl(struct file *filp, unsigned int cmd,
